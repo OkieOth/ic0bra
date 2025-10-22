@@ -13,7 +13,7 @@ var rootCmd = &cobra.Command{
 	Short: "Example for ic0bra integration with flag history",
 	Long:  `Example for ic0bra integration with flag history to provide an advanced interactive option for command line tools`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if cmdToCall, err := ic0bra.RunInteractiveWithHistory(cmd); err == nil {
+		if cmdToCall, err := ic0bra.RunInteractiveWithHistory(cmd, "ic0bra"); err == nil {
 			if cmdToCall != nil {
 				cmdToCall.Run(cmdToCall, args)
 			}
