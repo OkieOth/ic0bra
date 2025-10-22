@@ -16,12 +16,14 @@ var readerFactory = func() *bufio.Reader {
 	return bufio.NewReader(os.Stdin)
 }
 
+const SELECT_SUB_CMD_PROMPT = "Select the sub command to use: "
+
 // provides the user selection for the command - separated for better testability
-var selectionFactory = func(options []string) (string, error) {
+var selectionFactory = func(promptString string, options []string) (string, error) {
 	idx, err := fuzzyfinder.Find(
 		options,
 		func(i int) string { return options[i] },
-		fuzzyfinder.WithPromptString("Select the sub command to use: "),
+		fuzzyfinder.WithPromptString(promptString),
 	)
 	if err != nil {
 		return "", err
@@ -41,37 +43,22 @@ func RunInteractive(cmd *cobra.Command) (*cobra.Command, error) {
 // In case that there are flags configured it proposes input from a
 // history
 // cmd - cobra root command
-func RunInteractiveWithHistory(cmd *cobra.Command) (*cobra.Command, error) {
-	histProvider := newFileHistoryProvider()
+// appName - used as entry directory in the user config folder to store the history values
+func RunInteractiveWithHistory(cmd *cobra.Command, appName string) (*cobra.Command, error) {
+	histProvider, err := NewFileHistoryProvider(appName)
+	if err != nil {
+		return nil, err
+	}
 	return runInteractiveImpl(cmd, histProvider)
 }
 
-type historyProvider interface {
-	inputFromHist(flagName, txt string) (string, error)
-	hasHist(flagName string) bool
-	saveHist(flagName, value string) error
+type HistoryProvider interface {
+	InputFromHist(flagName, txt string) (string, error)
+	HasHist(flagName string) bool
+	SaveHist(flagName, value string) error
 }
 
-type fileHistoryProvider struct {
-}
-
-func newFileHistoryProvider() *fileHistoryProvider {
-	return &fileHistoryProvider{}
-}
-
-func (p *fileHistoryProvider) inputFromHist(flagName, txt string) (string, error) {
-	return "", nil // TODO
-}
-
-func (p *fileHistoryProvider) hasHist(flagName string) bool {
-	return true // TODO
-}
-
-func (p *fileHistoryProvider) saveHist(flagName, value string) error {
-	return nil // TODO
-}
-
-func runInteractiveImpl(cmd *cobra.Command, histProvider historyProvider) (*cobra.Command, error) {
+func runInteractiveImpl(cmd *cobra.Command, histProvider HistoryProvider) (*cobra.Command, error) {
 	subCommands := cmd.Commands()
 	if len(subCommands) == 0 {
 		return nil, fmt.Errorf("command has no sub commads")
@@ -79,7 +66,7 @@ func runInteractiveImpl(cmd *cobra.Command, histProvider historyProvider) (*cobr
 	currentCmd := cmd
 	for {
 		options := getOptionsFromCommands(subCommands...)
-		selected, err := selectionFactory(options)
+		selected, err := selectionFactory(SELECT_SUB_CMD_PROMPT, options)
 		if err != nil {
 			return nil, fmt.Errorf("error in interactive run: %v", err)
 		}
@@ -146,7 +133,7 @@ func shouldContinue() bool {
 	count := 0
 	maxCount := 10
 	for {
-		fmt.Printf("\nShould the program execution be continued? (default: yes) [yes|no]")
+		fmt.Printf("\nShould the program execution be continued (default is yes)? [yes|no]: ")
 		input, _ := reader.ReadString('\n') // read entire line
 		input = strings.TrimSpace(input)    // remove newline and spaces
 		if len(input) == 0 {
@@ -170,7 +157,7 @@ func shouldContinue() bool {
 }
 
 // iterates over the selected commands and collects input for their configured flags
-func setFlagsForCommands(cmdChain string, histProvider historyProvider, cmds ...*cobra.Command) string {
+func setFlagsForCommands(cmdChain string, histProvider HistoryProvider, cmds ...*cobra.Command) string {
 	showedChain := false
 	configuredFlags := ""
 	reader := readerFactory()
@@ -254,11 +241,11 @@ func collectFlagInput(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defV
 	}
 }
 
-func getHistHint(flagName string, histProv historyProvider) (bool, string) {
+func getHistHint(flagName string, histProv HistoryProvider) (bool, string) {
 	if histProv == nil {
 		return false, ""
 	}
-	if histProv.hasHist(flagName) {
+	if histProv.HasHist(flagName) {
 		return true, " [enter '?' for history]"
 	}
 	return false, ""
@@ -296,17 +283,17 @@ func collectRepeatedFlagInput(cmd *cobra.Command, f *pflag.Flag, defValue string
 	return setValue
 }
 
-func getHistInput(f *pflag.Flag, hasHist bool, reader *bufio.Reader, histProvider historyProvider, defValue string) string {
+func getHistInput(f *pflag.Flag, hasHist bool, reader *bufio.Reader, histProvider HistoryProvider, defValue string) string {
 	input, _ := reader.ReadString('\n') // read entire line
 	input = trimInput(input)
 	if hasHist && (input == "?") {
-		input, _ = histProvider.inputFromHist(f.Name, fmt.Sprintf("\n'--%s' %s (%s)", f.Name, defValue, f.Usage))
+		input, _ = histProvider.InputFromHist(f.Name, fmt.Sprintf("\n'--%s' %s (%s)", f.Name, defValue, f.Usage))
 		input = trimInput(input) // remove newline and spaces
 	}
 	return input
 }
 
-func collectFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defValue string, reader *bufio.Reader, histProvider historyProvider) string {
+func collectFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defValue string, reader *bufio.Reader, histProvider HistoryProvider) string {
 	var setValue string
 	for {
 		hasHist, histHint := getHistHint(f.Name, histProvider)
@@ -323,6 +310,7 @@ func collectFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, flagRequired bo
 				} else {
 					fmt.Printf("  Set value: %s\n", input)
 					setValue = input
+					histProvider.SaveHist(f.Name, setValue)
 					break
 				}
 			}
@@ -339,7 +327,7 @@ func collectFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, flagRequired bo
 	}
 }
 
-func collectRepeatedFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, defValue string, reader *bufio.Reader, histProvider historyProvider) string {
+func collectRepeatedFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, defValue string, reader *bufio.Reader, histProvider HistoryProvider) string {
 	var setValue string
 	bFirst := true
 	hasHist, histHint := getHistHint(f.Name, histProvider)
@@ -361,6 +349,7 @@ func collectRepeatedFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, defValu
 					fmt.Printf("⚠️  Could not set flag %s: %v\n", f.Name, err)
 				} else {
 					fmt.Printf("  Set value: %s\n", input)
+					histProvider.SaveHist(f.Name, input)
 					setValue += flagTxt(f, input)
 				}
 			}

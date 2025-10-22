@@ -64,7 +64,7 @@ func TestRunInteractive_SubCmdChain(t *testing.T) {
 		twoWasCalled := false
 		threeWasCalled := false
 
-		*ic0bra.SelectionFactory = func(options []string) (string, error) {
+		*ic0bra.SelectionFactory = func(promptString string, options []string) (string, error) {
 			return test.commandToCall, nil
 		}
 
@@ -358,7 +358,7 @@ func TestRunInteractive_InitFlags(t *testing.T) {
 		oneWasCalled := false
 		twoWasCalled := false
 
-		*ic0bra.SelectionFactory = func(options []string) (string, error) {
+		*ic0bra.SelectionFactory = func(promptString string, options []string) (string, error) {
 			return test.commandToCall, nil
 		}
 		*ic0bra.ReaderFactory = func() *bufio.Reader {
