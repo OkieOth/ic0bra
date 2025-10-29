@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/ktr0731/go-fuzzyfinder"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -53,7 +54,7 @@ func RunInteractiveWithHistory(cmd *cobra.Command, appName string) (*cobra.Comma
 }
 
 type HistoryProvider interface {
-	InputFromHist(flagName, txt string) (string, error)
+	InputFromHist(flagName, txt string, ignoreTxt []string, maxFlags, currentFlag int) (string, error)
 	HasHist(flagName string) bool
 	SaveHist(flagName, value string) error
 }
@@ -83,7 +84,8 @@ func runInteractiveImpl(cmd *cobra.Command, histProvider HistoryProvider) (*cobr
 			// reached end of the chain ..
 			cmdChain, txt := getCommandChain(nextCmd)
 			configuredFlags := setFlagsForCommands(txt, histProvider, cmdChain...)
-			fmt.Printf("\nresulting program call:\n\n  %s %s\n", txt, configuredFlags)
+			printInfo("\nresulting program call:\n\n")
+			color.Yellow("  %s %s\n", txt, configuredFlags)
 			if !shouldContinue() {
 				fmt.Println("Cancel.")
 				return nil, nil
@@ -133,7 +135,7 @@ func shouldContinue() bool {
 	count := 0
 	maxCount := 10
 	for {
-		fmt.Printf("\nShould the program execution be continued (default is yes)? [yes|no]: ")
+		printInfo("\nShould the program execution be continued (default is yes)? [yes|no]: ")
 		input, _ := reader.ReadString('\n') // read entire line
 		input = strings.TrimSpace(input)    // remove newline and spaces
 		if len(input) == 0 {
@@ -164,13 +166,15 @@ func setFlagsForCommands(cmdChain string, histProvider HistoryProvider, cmds ...
 	collectRepeatedFlagInputFunc := collectRepeatedFlagInput
 	collectFlagInputFunc := collectFlagInput
 	if histProvider != nil {
-		collectFlagInputFunc = func(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defValue string, reader *bufio.Reader) string {
-			return collectFlagInputWithHist(cmd, f, flagRequired, defValue, reader, histProvider)
+		collectFlagInputFunc = func(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defValue string, reader *bufio.Reader, maxFlags int, currentFlag *int) string {
+			return collectFlagInputWithHist(cmd, f, flagRequired, defValue, reader, histProvider, maxFlags, currentFlag)
 		}
-		collectRepeatedFlagInputFunc = func(cmd *cobra.Command, f *pflag.Flag, defValue string, reader *bufio.Reader) string {
-			return collectRepeatedFlagInputWithHist(cmd, f, defValue, reader, histProvider)
+		collectRepeatedFlagInputFunc = func(cmd *cobra.Command, f *pflag.Flag, defValue string, reader *bufio.Reader, maxFlags int, currentFlag *int) string {
+			return collectRepeatedFlagInputWithHist(cmd, f, defValue, reader, histProvider, maxFlags, currentFlag)
 		}
 	}
+	flagCount := getFlagCount(cmds...)
+	currentFlag := 1
 	for _, cmd := range cmds {
 		// Iterate over all flags of the command
 		cmd.Flags().VisitAll(func(f *pflag.Flag) {
@@ -180,7 +184,9 @@ func setFlagsForCommands(cmdChain string, histProvider HistoryProvider, cmds ...
 			}
 
 			if !showedChain {
-				fmt.Printf("\n`%s` will be called.\n\nIn the following steps the possible flags will be collected ...\n", cmdChain)
+				printInfo(fmt.Sprintf("\n`%s` will be called.\n\nIn the following steps the possible flags will be collected. Continue with ⏎\n", cmdChain))
+				//fmt.Printf("\n`%s` will be called.\n\nIn the following steps the possible flags will be collected. Continue with ⏎\n", cmdChain)
+				reader.ReadString('\n') // read entire line
 				showedChain = true
 			}
 
@@ -194,13 +200,26 @@ func setFlagsForCommands(cmdChain string, histProvider HistoryProvider, cmds ...
 				}
 			}
 			if isRepeatableFlag(f) {
-				configuredFlags += collectRepeatedFlagInputFunc(cmd, f, defValue, reader)
+				configuredFlags += collectRepeatedFlagInputFunc(cmd, f, defValue, reader, flagCount, &currentFlag)
 			} else {
-				configuredFlags += collectFlagInputFunc(cmd, f, flagRequired, defValue, reader)
+				configuredFlags += collectFlagInputFunc(cmd, f, flagRequired, defValue, reader, flagCount, &currentFlag)
 			}
 		})
 	}
 	return configuredFlags
+}
+
+func getFlagCount(cmds ...*cobra.Command) int {
+	var flagCount int
+	for _, c := range cmds {
+		c.Flags().VisitAll(func(f *pflag.Flag) {
+			// Ask interactively for input
+			if f.Name != "help" {
+				flagCount++
+			}
+		})
+	}
+	return flagCount
 }
 
 const HELP = "?"
@@ -208,10 +227,10 @@ const HELP2 = "help"
 const HELP3 = "--help"
 
 // implements the user interaction to get the required input for a flag
-func collectFlagInput(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defValue string, reader *bufio.Reader) string {
+func collectFlagInput(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defValue string, reader *bufio.Reader, maxFlags int, currentFlag *int) string {
 	var setValue string
 	for {
-		fmt.Printf("\n--%s: %s: ", f.Name, defValue)
+		fmt.Printf("\n[%d/%d] --%s: %s: ", *currentFlag, maxFlags, f.Name, defValue)
 		input, _ := reader.ReadString('\n') // read entire line
 		input = trimInput(input)            // remove newline and spaces
 
@@ -223,7 +242,7 @@ func collectFlagInput(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defV
 				if err := cmd.Flags().Set(f.Name, input); err != nil {
 					fmt.Printf("⚠️  Could not set flag %s: %v\n", f.Name, err)
 				} else {
-					fmt.Printf("  Set value: %s\n", input)
+					fmt.Printf("\nSet value: --%s %s\n", f.Name, input)
 					setValue = input
 					break
 				}
@@ -234,6 +253,7 @@ func collectFlagInput(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defV
 			break
 		}
 	}
+	*currentFlag++
 	if setValue != "" {
 		return flagTxt(f, setValue)
 	} else {
@@ -251,12 +271,17 @@ func getHistHint(flagName string, histProv HistoryProvider) (bool, string) {
 	return false, ""
 }
 
-func collectRepeatedFlagInput(cmd *cobra.Command, f *pflag.Flag, defValue string, reader *bufio.Reader) string {
+func printInfo(msg string) {
+	c := color.New(color.FgHiBlue)
+	c.Print(msg)
+}
+
+func collectRepeatedFlagInput(cmd *cobra.Command, f *pflag.Flag, defValue string, reader *bufio.Reader, maxFlags int, currentFlag *int) string {
 	var setValue string
 	bFirst := true
 	for {
 		if bFirst {
-			fmt.Printf("\n--%s %s\nmultiple values possible: ", f.Name, defValue)
+			fmt.Printf("\n[%d/%d] --%s %s\nmultiple values possible: ", *currentFlag, maxFlags, f.Name, defValue)
 			bFirst = false
 		} else {
 			fmt.Printf("\nnext value, empty input to finish: ")
@@ -272,7 +297,7 @@ func collectRepeatedFlagInput(cmd *cobra.Command, f *pflag.Flag, defValue string
 				if err := cmd.Flags().Set(f.Name, input); err != nil {
 					fmt.Printf("⚠️  Could not set flag %s: %v\n", f.Name, err)
 				} else {
-					fmt.Printf("  Set value: %s\n", input)
+					fmt.Printf("\nSet value: --%s %s\n", f.Name, input)
 					setValue += flagTxt(f, input)
 				}
 			}
@@ -280,25 +305,28 @@ func collectRepeatedFlagInput(cmd *cobra.Command, f *pflag.Flag, defValue string
 			break
 		}
 	}
+	*currentFlag++
 	return setValue
 }
 
-func getHistInput(f *pflag.Flag, hasHist bool, reader *bufio.Reader, histProvider HistoryProvider, defValue string) string {
+func getHistInput(f *pflag.Flag, hasHist bool, reader *bufio.Reader, histProvider HistoryProvider, defValue, histHint string, txtToIgnore []string, maxFlags, currentFlag int) (string, bool) {
+	if hasHist {
+		if input, err := histProvider.InputFromHist(f.Name, fmt.Sprintf("\n'--%s' %s (%s), to enter new value press ESC", f.Name, defValue, f.Usage), txtToIgnore, maxFlags, currentFlag); err == nil {
+			return trimInput(input), true
+		}
+	}
+	printInfo(histHint)
 	input, _ := reader.ReadString('\n') // read entire line
 	input = trimInput(input)
-	if hasHist && (input == "?") {
-		input, _ = histProvider.InputFromHist(f.Name, fmt.Sprintf("\n'--%s' %s (%s)", f.Name, defValue, f.Usage))
-		input = trimInput(input) // remove newline and spaces
-	}
-	return input
+	return input, false
 }
 
-func collectFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defValue string, reader *bufio.Reader, histProvider HistoryProvider) string {
+func collectFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, flagRequired bool, defValue string, reader *bufio.Reader, histProvider HistoryProvider, maxFlags int, currentFlag *int) string {
 	var setValue string
 	for {
-		hasHist, histHint := getHistHint(f.Name, histProvider)
-		fmt.Printf("\n--%s %s%s: ", f.Name, defValue, histHint)
-		input := getHistInput(f, hasHist, reader, histProvider, defValue)
+		hasHist, _ := getHistHint(f.Name, histProvider)
+		histHint := fmt.Sprintf("\n[%d/%d] new value for: --%s %s: ", *currentFlag, maxFlags, f.Name, defValue)
+		input, _ := getHistInput(f, hasHist, reader, histProvider, defValue, histHint, []string{}, maxFlags, *currentFlag)
 
 		if input != "" {
 			if input == HELP || input == HELP2 || input == HELP3 {
@@ -306,20 +334,23 @@ func collectFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, flagRequired bo
 			} else {
 				// User provided a value -> set it
 				if err := cmd.Flags().Set(f.Name, input); err != nil {
-					fmt.Printf("⚠️  Could not set flag %s: %v\n", f.Name, err)
+					fmt.Printf("⚠️  Could not set flag %s: %v\nContinue with ⏎\n", f.Name, err)
+					reader.ReadString('\n') // read entire line
 				} else {
-					fmt.Printf("  Set value: %s\n", input)
+					fmt.Printf("\nSet value: --%s %s\n", f.Name, input)
 					setValue = input
 					histProvider.SaveHist(f.Name, setValue)
 					break
 				}
 			}
 		} else if flagRequired {
-			fmt.Printf("⚠️  Flag %s is required, so input is needed!\n", f.Name)
+			fmt.Printf("⚠️  Flag %s is required, so input is needed! Continue with ⏎\n", f.Name)
+			reader.ReadString('\n') // read entire line
 		} else {
 			break
 		}
 	}
+	*currentFlag++
 	if setValue != "" {
 		return flagTxt(f, setValue)
 	} else {
@@ -327,29 +358,30 @@ func collectFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, flagRequired bo
 	}
 }
 
-func collectRepeatedFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, defValue string, reader *bufio.Reader, histProvider HistoryProvider) string {
+func collectRepeatedFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, defValue string, reader *bufio.Reader, histProvider HistoryProvider, maxFlags int, currentFlag *int) string {
 	var setValue string
-	bFirst := true
-	hasHist, histHint := getHistHint(f.Name, histProvider)
+	hasHist, _ := getHistHint(f.Name, histProvider)
+	histHint := fmt.Sprintf("\n[%d/%d] --%s %s\nmultiple values possible, leave empty to skip or finish: ", *currentFlag, maxFlags, f.Name, defValue)
+	txtToIgnore := make([]string, 0)
 	for {
-		if bFirst {
-			fmt.Printf("\n--%s %s%s\nmultiple values possible: ", f.Name, defValue, histHint)
-			bFirst = false
-		} else {
-			fmt.Printf("\nnext value, empty input to finish: ")
+		input, fromHist := getHistInput(f, hasHist, reader, histProvider, defValue, histHint, txtToIgnore, maxFlags, *currentFlag)
+		if !fromHist {
+			hasHist = false
 		}
-		input := getHistInput(f, hasHist, reader, histProvider, defValue)
 
 		if input != "" {
 			if input == HELP || input == HELP2 || input == HELP3 {
-				fmt.Printf("  Expected input: %s\n", f.Usage)
+				fmt.Printf("  Expected input: %s, continue with ⏎\n", f.Usage)
+				reader.ReadString('\n') // read entire line
 			} else {
 				// User provided a value -> set it
 				if err := cmd.Flags().Set(f.Name, input); err != nil {
-					fmt.Printf("⚠️  Could not set flag %s: %v\n", f.Name, err)
+					fmt.Printf("⚠️  Could not set flag %s: %v, continue with ⏎\n", f.Name, err)
+					reader.ReadString('\n') // read entire line
 				} else {
-					fmt.Printf("  Set value: %s\n", input)
+					fmt.Printf("\nSet value: --%s %s\n", f.Name, input)
 					histProvider.SaveHist(f.Name, input)
+					txtToIgnore = append(txtToIgnore, input)
 					setValue += flagTxt(f, input)
 				}
 			}
@@ -357,6 +389,7 @@ func collectRepeatedFlagInputWithHist(cmd *cobra.Command, f *pflag.Flag, defValu
 			break
 		}
 	}
+	*currentFlag++
 	return setValue
 }
 

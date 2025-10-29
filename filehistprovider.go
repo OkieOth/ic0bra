@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 type FileHistoryProvider struct {
@@ -47,12 +48,18 @@ func (p *FileHistoryProvider) HistDir() string {
 	return p.histDir
 }
 
-func (p *FileHistoryProvider) InputFromHist(flagName, txt string) (string, error) {
+func (p *FileHistoryProvider) InputFromHist(flagName, txt string, ignoreTxt []string, maxFlags, currentFlag int) (string, error) {
 	histContent, err := p.GetHistContent(flagName)
+	contentToUse := make([]string, 0)
+	for _, c := range histContent {
+		if !slices.Contains(ignoreTxt, c) {
+			contentToUse = append(contentToUse, c)
+		}
+	}
 	if err != nil {
 		return "", err
 	}
-	return selectionFactory(fmt.Sprintf("Select the previous input for '--%s': ", flagName), histContent)
+	return selectionFactory(fmt.Sprintf("[%d/%d] Select from the previous input for '--%s': ", currentFlag, maxFlags, flagName), contentToUse)
 }
 
 func (p *FileHistoryProvider) GetHistFileName(flagName string) string {
