@@ -105,6 +105,11 @@ func TestRunInteractive_SubCmdChain(t *testing.T) {
 		rootCmd.AddCommand(twoCmd)
 		rootCmd.AddCommand(threeCmd)
 
+		*ic0bra.ReaderFactory = func() *bufio.Reader {
+			r := strings.NewReader("\n")
+			return bufio.NewReader(r)
+		}
+
 		rootCmd.Run(rootCmd, []string{})
 
 		if rootWasCalled != test.rootWasCalled {
@@ -201,7 +206,7 @@ func TestRunInteractive_InitFlags(t *testing.T) {
 			twoWasCalled:  true,
 			commandToCall: "two",
 			hasFlags:      true,
-			flagsInput:    "\n\n\n\n\n\n\n\n\n\n",
+			flagsInput:    "\n\n\n\n\n\n\n\n\n\n\n",
 
 			initFlagsFunc: func(testData *TestData, cmd *cobra.Command) {
 				rootCmd := cmd.Parent()
@@ -224,7 +229,7 @@ func TestRunInteractive_InitFlags(t *testing.T) {
 			commandToCall: "two",
 			hasFlags:      true,
 			// the flags are queried in the order, that first the normal flags are queried and then persistence flags
-			flagsInput: "false\ntest content\n540\nanother value\njust another value\nanother value again\n \ntrue\nI am ä sentence\n666\nää üüü 00\n \n true\n false\n true\n \n 13\n 14\n 15\n 16\n \n1.5\n1.6\n \n",
+			flagsInput: "\nfalse\ntest content\n540\nanother value\njust another value\nanother value again\n \ntrue\nI am ä sentence\n666\nää üüü 00\n \n true\n false\n true\n \n 13\n 14\n 15\n 16\n \n1.5\n1.6\n \n\n",
 
 			initFlagsFunc: func(testData *TestData, cmd *cobra.Command) {
 				rootCmd := cmd.Parent()
